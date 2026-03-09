@@ -9,32 +9,33 @@
         crossorigin=""/>
   <style>
     :root {
-      --bg-primary: #0a0c10;
-      --bg-secondary: #111318;
-      --bg-tertiary: #1a1d24;
-      --bg-elevated: #22262e;
-      --text-primary: #f7f8fa;
-      --text-secondary: #9ca3af;
-      --text-muted: #6b7280;
-      --accent: #3b82f6;
-      --accent-hover: #60a5fa;
-      --accent-glow: rgba(59, 130, 246, 0.3);
-      --success: #10b981;
-      --success-hover: #34d399;
-      --danger: #ef4444;
-      --danger-hover: #f87171;
-      --warning: #f59e0b;
-      --warning-hover: #fbbf24;
-      --border: rgba(255, 255, 255, 0.08);
-      --border-strong: rgba(255, 255, 255, 0.15);
-      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.3);
-      --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -4px rgba(0, 0, 0, 0.4);
+      /* White / Black palette with glassmorphism variables (match index.html) */
+      --bg-primary: #ffffff;
+      --bg-secondary: rgba(255,255,255,0.96);
+      --bg-tertiary: rgba(255,255,255,0.92);
+      --bg-elevated: rgba(255,255,255,0.90);
+      --text-primary: #000000;
+      --text-secondary: #666666;
+      --text-muted: #777777;
+      --accent: #000000;
+      --accent-hover: #222222;
+      --accent-glow: rgba(0,0,0,0.06);
+      --success: #000000;
+      --success-hover: #111111;
+      --danger: #000000;
+      --danger-hover: #111111;
+      --warning: #000000;
+      --warning-hover: #111111;
+      --border: rgba(0, 0, 0, 0.08);
+      --border-strong: rgba(0, 0, 0, 0.12);
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+      --shadow: 0 8px 24px rgba(0,0,0,0.08);
+      --shadow-lg: 0 18px 48px rgba(0,0,0,0.12);
       --radius-sm: 6px;
       --radius: 10px;
       --radius-lg: 14px;
       --radius-xl: 20px;
-      --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      --transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
     * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -310,6 +311,19 @@
       min-width: 0;
       background: var(--bg-primary);
     }
+
+    /* Floating transparent logo overlay above the map */
+    .map-logo-overlay {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1200;
+      pointer-events: none;
+      background: transparent;
+      padding: 0;
+    }
+    .map-logo-overlay img { display:block;width:96px;max-width:40vw;}
 
     #map { 
       width: 100%; 
@@ -1014,7 +1028,7 @@
   <div class="app-container">
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
-        <h1>📍 WorkMap</h1>
+        <img src="2.png" alt="Logo" class="logo-image" style="width:150px;border-radius:10px">
         <p>Ofertas laborales en tu zona</p>
       </div>
       
@@ -1044,6 +1058,9 @@
 
     <main class="map-container">
       <button class="center-location-btn" id="centerMapBtn" title="Centrar en mi ubicación">🎯</button>
+      <div class="map-logo-overlay">
+        <img src="2.png" alt="Logo">
+      </div>
       <div id="map"></div>
     </main>
   </div>
@@ -1453,10 +1470,26 @@
           <span>📍 ${latText}, ${lngText}</span>
         </div>
         ${isOwner ? `<button class="btn btn-danger" onclick="deletePost('${postId}')">🗑️ Eliminar publicación</button>` : ''}
+        
+        <!-- Comments section (mini-foro) -->
+        <hr style="margin:18px 0;border:none;border-top:1px solid var(--border)">
+        <div id="commentsSection-${postId}" class="comments-section">
+          <h4 style="margin:0 0 8px;font-size:15px">Preguntas y respuestas</h4>
+          <div id="commentsList-${postId}" style="margin-bottom:12px"></div>
+          <div style="display:flex;gap:8px;align-items:flex-start">
+            <textarea id="commentInput-${postId}" placeholder="Haz una pregunta sobre esta oferta" style="flex:1;padding:10px;border-radius:10px;border:1px solid var(--border);resize:vertical;height:60px"></textarea>
+            <div style="width:110px">
+              <button class="btn btn-primary" onclick="addComment('${postId}')">💬 Comentar</button>
+            </div>
+          </div>
+          <small style="color:var(--text-muted);display:block;margin-top:8px">Cada publicación tiene su propio hilo independiente.</small>
+        </div>
       `; 
       
       document.getElementById('detailContent').innerHTML = content; 
       document.getElementById('detailPanel').classList.add('active'); 
+      // load comments for this post
+      loadComments(postId);
       
       if (window.innerWidth <= 768) {
         document.getElementById('sidebar').classList.remove('open');
@@ -1762,6 +1795,129 @@
       toast.textContent = message; 
       toast.className = `toast toast-${type} show`; 
       setTimeout(() => toast.classList.remove('show'), 4000); 
+    }
+
+    // --- Comments (mini-foro) ---
+    const commentsListeners = {};
+    const postingComments = {};
+    const postingReplies = {};
+
+    function maskEmail(email) {
+      if (!email) return 'Anónimo';
+      const parts = String(email).split('@');
+      if (parts.length < 2) return email;
+      const local = parts[0];
+      const domain = parts[1];
+      const stars = '*'.repeat(6);
+      return `${local}${stars}@${domain}`;
+    }
+
+    window.loadComments = function loadComments(postId) {
+      const commentsRef = ref(db, 'comments/' + postId);
+      // detach previous listener for this post if exists
+      if (commentsListeners[postId]) off(commentsRef, 'value', commentsListeners[postId]);
+      const handler = (snap) => {
+        const data = snap.val() || {};
+        const listEl = document.getElementById('commentsList-' + postId);
+        if (!listEl) return;
+        const entries = Object.entries(data).sort((a,b)=> (b[1].createdAt||0)-(a[1].createdAt||0));
+        if (entries.length === 0) {
+          listEl.innerHTML = `<div style="color:var(--text-muted);font-size:13px">Sin preguntas aún. Sé el primero.</div>`;
+          return;
+        }
+        listEl.innerHTML = entries.map(([cid, comment]) => {
+          const author = escapeHtml(maskEmail(comment.authorEmail) || 'Anónimo');
+          const text = escapeHtml(comment.text||'');
+          const time = formatDate(comment.createdAt);
+          let replyHtml = '';
+          if (comment.reply) {
+            const r = comment.reply;
+            replyHtml = `<div style="margin-top:8px;padding:10px;border-radius:10px;background:rgba(0,0,0,0.03);border:1px solid var(--border)">
+                <strong>${escapeHtml(maskEmail(r.authorEmail) || 'Autor')}</strong>
+                <div style="font-size:14px;margin-top:6px">${escapeHtml(r.text||'')}</div>
+                <div style="font-size:12px;color:var(--text-muted);margin-top:6px">${formatDate(r.createdAt)}</div>
+              </div>`;
+          }
+          // if current user is the post owner, show reply box
+          const postOwner = posts[postId]?.authorUID;
+          const canReply = currentUser && postOwner && currentUser.uid === postOwner;
+          const replyBox = canReply && !comment.reply ?
+            `<div style="margin-top:8px;display:flex;gap:8px;align-items:flex-start">
+                <input id="replyInput-${postId}-${cid}" placeholder="Responder" style="flex:1;padding:8px;border-radius:8px;border:1px solid var(--border)">
+                <button class="btn" style="padding:8px 10px;font-size:13px" onclick="addReply('${postId}','${cid}')">Responder</button>
+             </div>` : '';
+
+          return `
+            <div style="padding:10px 0;border-bottom:1px dashed var(--border);margin-bottom:8px">
+              <div style="display:flex;justify-content:space-between;gap:8px">
+                <div style="font-weight:600">${author}</div>
+                <div style="font-size:12px;color:var(--text-muted)">${time}</div>
+              </div>
+              <div style="margin-top:6px;font-size:14px">${text}</div>
+              ${replyHtml}
+              ${replyBox}
+            </div>
+          `;
+        }).join('');
+      };
+      onValue(commentsRef, handler);
+      commentsListeners[postId] = handler;
+    }
+
+    window.addComment = async function addComment(postId) {
+      const input = document.getElementById('commentInput-' + postId);
+      if (!input) return;
+      const text = (input.value||'').trim();
+      if (!text) { showToast('Escribe un comentario', 'warning'); return; }
+          if (postingComments[postId]) return; // prevent duplicate submissions
+          try {
+            postingComments[postId] = true;
+            input.disabled = true;
+            const commentsRef = ref(db, 'comments/' + postId);
+            const newRef = push(commentsRef);
+            await set(newRef, {
+              text,
+              authorUID: currentUser.uid,
+              authorEmail: currentUser.email,
+              createdAt: Date.now()
+            });
+            input.value = '';
+            showToast('Comentario agregado', 'success');
+          } catch (e) {
+            console.error(e);
+            showToast('Error al publicar el comentario', 'error');
+          } finally {
+            postingComments[postId] = false;
+            input.disabled = false;
+          }
+    }
+
+    window.addReply = async function addReply(postId, commentId) {
+      const input = document.getElementById(`replyInput-${postId}-${commentId}`);
+      if (!input) return;
+      const text = (input.value||'').trim();
+      if (!text) { showToast('Escribe una respuesta', 'warning'); return; }
+          const key = `${postId}_${commentId}`;
+          if (postingReplies[key]) return;
+          try {
+            postingReplies[key] = true;
+            input.disabled = true;
+            const commentRef = ref(db, `comments/${postId}/${commentId}/reply`);
+            await set(commentRef, {
+              text,
+              authorUID: currentUser.uid,
+              authorEmail: currentUser.email,
+              createdAt: Date.now()
+            });
+            input.value = '';
+            showToast('Respuesta agregada', 'success');
+          } catch (e) {
+            console.error(e);
+            showToast('Error al agregar la respuesta', 'error');
+          } finally {
+            postingReplies[key] = false;
+            input.disabled = false;
+          }
     }
 
     function escapeHtml(text) { 
