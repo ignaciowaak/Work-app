@@ -333,11 +333,12 @@
       padding: 0;
     }
     .map-logo-overlay img { display:block;width:96px;max-width:40vw;}
-    /* Ads overlay (full width, non-blocking for map controls) */
-    .ads-overlay { position: absolute; left: 50%; transform: translateX(-50%); top: 60px; z-index:1300; width: min(920px, calc(100% - 20px)); pointer-events: auto; display:none; padding:0 10px }
-    .ads-card { position: relative; border-radius:12px; overflow:hidden; background:rgba(255,255,255,0.98); box-shadow:0 12px 40px rgba(0,0,0,0.15); display:flex; align-items:center; justify-content:center; min-height:360px }
+    /* Ads overlay - only image, no containers */
+    .ads-overlay { position: absolute; left: 50%; transform: translateX(-50%); top: 60px; z-index:1300; width: min(920px, calc(100% - 20px)); pointer-events: auto; display:none; padding:0; opacity:1; transition:opacity 0.3s ease }
+    .ads-overlay.closing { opacity:0; pointer-events:none }
+    .ads-card { display:contents }
     .ads-card img { width:100%; height:auto; max-height:360px; object-fit:contain; display:block }
-    @media (max-width:600px){ .ads-overlay { top: 50%; transform: translate(-50%, -50%); } .ads-card { min-height:280px } .ads-card img { max-height:280px } }
+    @media (max-width:600px){ .ads-overlay { top: 50%; transform: translate(-50%, -50%); } .ads-card img { max-height:280px } }
     
       /* mapPicker child map sizing */
       .map-picker { border-radius:12px; overflow:hidden; margin-top:10px }
@@ -1032,13 +1033,30 @@
       to { opacity: 1; }
     }
 
-    /* Mejoras para Leaflet en modo oscuro */
+    /* Mejoras para Leaflet en modo oscuro: eliminar cajas/blancos en controles */
     .leaflet-container {
       background: var(--bg-primary);
     }
 
+    /* Forzar controles transparentes y sin borde/sombra */
+    .leaflet-control,
+    .leaflet-bar,
+    .leaflet-control-zoom,
+    .leaflet-control-layers,
+    .leaflet-control-attribution,
+    .leaflet-control .leaflet-control-zoom a,
+    .leaflet-control a,
+    .leaflet-control button {
+      background: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
+      color: var(--text-secondary) !important;
+      padding: 0 !important;
+    }
+
+    /* Attribution small link styling kept but transparent background */
     .leaflet-control-attribution {
-      background: rgba(17, 19, 24, 0.8) !important;
+      background: transparent !important;
       color: var(--text-muted) !important;
       font-size: 10px;
       padding: 4px 8px;
@@ -2065,7 +2083,7 @@
         }, 4000);
       } else {
         // Siguiente anuncio después de 4 segundos
-        adsTimer = setTimeout(() => { nextAd(); }, 5000);
+        adsTimer = setTimeout(() => { nextAd(); }, 4000);
       }
     }
 
@@ -2076,7 +2094,15 @@
 
     function closeAdsOverlay() {
       const overlay = document.getElementById('adsOverlay');
-      if (overlay) overlay.style.display = 'none';
+      const img = document.getElementById('adsImage');
+      if (overlay) {
+        overlay.classList.add('closing');
+        setTimeout(() => {
+          overlay.style.display = 'none';
+          overlay.classList.remove('closing');
+          if (img) img.src = '';
+        }, 300);
+      }
       clearTimeout(adsTimer);
       adsStarted = false;
     }
