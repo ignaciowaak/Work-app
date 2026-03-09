@@ -173,6 +173,15 @@
       padding: 16px;
     }
 
+    /* Make sidebar scrollable and responsive on small screens */
+    .sidebar { max-height: 100vh; }
+    .sidebar-content { -webkit-overflow-scrolling: touch; padding-bottom: 28px; }
+
+    /* Ensure post cards don't overflow on small screens */
+    .post-card, .post-card h4, .post-card p { box-sizing: border-box; word-break: break-word; }
+    .post-card .meta { flex-wrap: wrap; gap:8px }
+
+
     /* Posts Cards Rediseñadas */
     .post-card { 
       background: var(--bg-tertiary); 
@@ -324,6 +333,25 @@
       padding: 0;
     }
     .map-logo-overlay img { display:block;width:96px;max-width:40vw;}
+    /* Ads overlay (full width, non-blocking for map controls) */
+    .ads-overlay { position: absolute; left: 50%; transform: translateX(-50%); top: 60px; z-index:1300; width: min(920px, calc(100% - 20px)); pointer-events: auto; display:none; padding:0 10px }
+    .ads-card { position: relative; border-radius:12px; overflow:hidden; background:rgba(255,255,255,0.98); box-shadow:0 12px 40px rgba(0,0,0,0.15) }
+    .ads-card img { width:100%; height:360px; object-fit:cover; display:block }
+    @media (max-width:600px){ .ads-overlay { top: 50%; transform: translate(-50%, -50%); } .ads-card img{height:280px} }
+    
+      /* mapPicker child map sizing */
+      .map-picker { border-radius:12px; overflow:hidden; margin-top:10px }
+      #mapPickerMap { width:100%; height:280px }
+      .map-search-item { cursor: pointer; }
+      .map-search-item:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.06); transform: translateY(-2px); }
+
+      /* Mobile sidebar: off-canvas and scrollable when opened */
+      @media (max-width: 900px) {
+        .sidebar { position: absolute; left: 0; top: 0; bottom: 0; transform: translateX(-110%); width: 88%; max-width: 420px; box-shadow: 0 12px 40px rgba(0,0,0,0.12); }
+        .sidebar.open { transform: translateX(0); }
+        .app-container { overflow: hidden; }
+        .map-container { flex: 1; }
+      }
 
     #map { 
       width: 100%; 
@@ -1112,7 +1140,13 @@
                 <span>Elegir en mapa</span>
               </button>
             </div>
-            <div class="map-picker" id="mapPicker" style="display:none"></div>
+              <div class="map-picker" id="mapPicker" style="display:none">
+                <div class="map-search" style="padding:8px 12px;border-bottom:1px solid var(--border);background:transparent">
+                  <input id="mapSearchInput" placeholder="Buscar calle y número (ej: Maipú 123)" style="width:100%;padding:10px;border-radius:10px;border:1px solid var(--border);outline:none">
+                  <div id="mapSearchResults" style="margin-top:8px;max-height:180px;overflow:auto"></div>
+                </div>
+                <div id="mapPickerMap" style="height:280px;"></div>
+              </div>
             <input type="hidden" id="postLat">
             <input type="hidden" id="postLng">
           </div>
@@ -1169,6 +1203,12 @@
   </div>
 
   <div class="toast" id="toast"></div>
+  <div class="ads-overlay" id="adsOverlay">
+    <div class="ads-card" id="adsCard">
+      <img id="adsImage" src="" alt="Anuncio">
+      <button id="adsCloseBtn" style="display:none;position:absolute;top:10px;right:10px;width:40px;height:40px;border-radius:50%;background:rgba(0,0,0,0.5);color:white;border:none;font-size:24px;cursor:pointer;z-index:1001;transition:all 0.2s">✕</button>
+    </div>
+  </div>
   <div class="lightbox" id="lightbox" onclick="closeLightbox()"><img id="lightboxImg"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" 
@@ -1253,6 +1293,9 @@
           showToast('Buscando tu ubicación GPS...', 'warning'); 
         }
       }); 
+      
+      // Inicializar listeners para anuncios cuando el usuario interactúa con el mapa
+      setTimeout(() => { initAdsOnMapInteraction(); }, 100);
     }
 
     function trackUserLocation() { 
@@ -1596,11 +1639,12 @@
       
       if (!mapPicker) { 
         setTimeout(() => { 
-          mapPicker = L.map('mapPicker').setView([-34.6037, -58.3816], 12); 
+          mapPicker = L.map('mapPickerMap').setView([-34.6037, -58.3816], 12); 
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
             attribution: '© OpenStreetMap' 
           }).addTo(mapPicker); 
-          
+
+          // click to set marker
           mapPicker.on('click', (e) => { 
             if (mapPickerMarker) {
               mapPickerMarker.setLatLng(e.latlng); 
@@ -1611,12 +1655,65 @@
             document.getElementById('postLat').value = selectedLocation.lat; 
             document.getElementById('postLng').value = selectedLocation.lng; 
           }); 
-          
+
+          // If user marker exists, center there
           if (userMarker) mapPicker.setView(userMarker.getLatLng(), 14); 
-          setTimeout(() => mapPicker.invalidateSize(), 200); 
+
+          // Setup address search in mapPicker
+          const searchInput = document.getElementById('mapSearchInput');
+          const resultsEl = document.getElementById('mapSearchResults');
+          let searchTimeout = null;
+          searchInput.addEventListener('input', (ev) => {
+            const q = ev.target.value.trim();
+            clearTimeout(searchTimeout);
+            if (!q) { resultsEl.innerHTML = ''; return; }
+            searchTimeout = setTimeout(() => { searchAddress(q); }, 350);
+          });
+
+          async function searchAddress(query) {
+            try {
+              resultsEl.innerHTML = '<div style="color:var(--text-muted);padding:8px">Buscando...</div>';
+              const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=6&q=${encodeURIComponent(query)}`;
+              const resp = await fetch(url, { headers: { 'Accept-Language': 'es' } });
+              const data = await resp.json();
+              if (!Array.isArray(data) || data.length === 0) {
+                resultsEl.innerHTML = '<div style="color:var(--text-muted);padding:8px">No se encontraron resultados</div>';
+                return;
+              }
+              resultsEl.innerHTML = data.map(r => {
+                const display = r.display_name.replace(/, /g, ' · ');
+                return `<div class="map-search-item" data-lat="${r.lat}" data-lon="${r.lon}" style="padding:8px;border-radius:8px;margin-bottom:6px;cursor:pointer;background:var(--bg-secondary);border:1px solid var(--border)">${escapeHtml(display)}</div>`;
+              }).join('');
+
+              resultsEl.querySelectorAll('.map-search-item').forEach(el => {
+                el.addEventListener('click', (e) => {
+                  const lat = parseFloat(el.getAttribute('data-lat'));
+                  const lon = parseFloat(el.getAttribute('data-lon'));
+                  if (!isNaN(lat) && !isNaN(lon)) {
+                    mapPicker.setView([lat, lon], 17);
+                    if (mapPickerMarker) mapPickerMarker.setLatLng([lat, lon]); else mapPickerMarker = L.marker([lat, lon]).addTo(mapPicker);
+                    selectedLocation = { lat, lng: lon };
+                    document.getElementById('postLat').value = lat;
+                    document.getElementById('postLng').value = lon;
+                    resultsEl.innerHTML = '';
+                    searchInput.value = '';
+                    showToast('Ubicación seleccionada desde búsqueda', 'success');
+                  }
+                });
+              });
+            } catch (err) {
+              console.error(err);
+              resultsEl.innerHTML = '<div style="color:var(--text-muted);padding:8px">Error de búsqueda</div>';
+            }
+          }
+
+          setTimeout(() => {
+            mapPicker.invalidateSize();
+            try { const si = document.getElementById('mapSearchInput'); if (si) si.focus(); } catch(e){}
+          }, 200); 
         }, 150); 
       } else { 
-        setTimeout(() => mapPicker.invalidateSize(), 100); 
+        setTimeout(() => { mapPicker.invalidateSize(); try { const si = document.getElementById('mapSearchInput'); if (si) si.focus(); } catch(e){} }, 100); 
       } 
     };
 
@@ -1919,6 +2016,94 @@
             input.disabled = false;
           }
     }
+
+    // --- Ads overlay / carousel ---
+    let adsList = [];
+    let adsIndex = 0;
+    let adsTimer = null;
+    let adsStarted = false;
+    let userMapInteractionTime = null;
+    let adsInitTimer = null;
+
+    onValue(ref(db, 'ads'), (snap) => {
+      const data = snap.val() || {};
+      adsList = Object.entries(data).map(([id, a]) => ({ id, ...a }));
+    });
+
+    let adsShownCount = 0; // Track how many ads have been shown in current carousel session
+
+    function startAdsCarousel() {
+      if (adsStarted) return;
+      if (!adsList || adsList.length === 0) return;
+      adsStarted = true;
+      adsIndex = 0;
+      adsShownCount = 0;
+      showAdAtIndex(adsIndex);
+    }
+
+    function showAdAtIndex(i) {
+      if (!adsList || adsList.length === 0) return closeAdsOverlay();
+      
+      adsIndex = i % (adsList.length || 1);
+      const ad = adsList[adsIndex];
+      const img = document.getElementById('adsImage');
+      const overlay = document.getElementById('adsOverlay');
+      const closeBtn = document.getElementById('adsCloseBtn');
+      
+      if (!ad || !img || !overlay) return;
+      
+      img.src = ad.imageBase64 || '';
+      overlay.style.display = 'block';
+      if (closeBtn) closeBtn.style.display = 'none';
+      
+      clearTimeout(adsTimer);
+      
+      // Si este es el último anuncio de la lista, mostrar X después de 4 segundos
+      if (adsIndex === adsList.length - 1) {
+        adsTimer = setTimeout(() => {
+          if (closeBtn) closeBtn.style.display = 'block';
+        }, 4000);
+      } else {
+        // Siguiente anuncio después de 4 segundos
+        adsTimer = setTimeout(() => { nextAd(); }, 4000);
+      }
+    }
+
+    function nextAd() {
+      adsIndex = (adsIndex + 1) % (adsList.length || 1);
+      showAdAtIndex(adsIndex);
+    }
+
+    function closeAdsOverlay() {
+      const overlay = document.getElementById('adsOverlay');
+      if (overlay) overlay.style.display = 'none';
+      clearTimeout(adsTimer);
+      adsStarted = false;
+    }
+
+    // Detectar primera interacción del usuario con el mapa y mostrar anuncios después de 30s
+    function initAdsOnMapInteraction() {
+      if (map && !userMapInteractionTime) {
+        const onMapInteract = () => {
+          if (!userMapInteractionTime) {
+            userMapInteractionTime = Date.now();
+            clearTimeout(adsInitTimer);
+            adsInitTimer = setTimeout(() => { startAdsCarousel(); }, 30000);
+          }
+        };
+        try {
+          map.on('movestart', onMapInteract);
+          map.on('click', onMapInteract);
+          map.on('zoom', onMapInteract);
+        } catch(e) { console.warn('Error attaching map listeners:', e); }
+      }
+    }
+
+    // Setup close button listener
+    setTimeout(()=>{
+      const closeBtn = document.getElementById('adsCloseBtn');
+      if (closeBtn) closeBtn.addEventListener('click', ()=>{ closeAdsOverlay(); });
+    }, 400);
 
     function escapeHtml(text) { 
       if (text === undefined || text === null) return ''; 
