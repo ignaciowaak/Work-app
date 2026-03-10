@@ -1220,6 +1220,63 @@
     <div class="detail-content" id="detailContent"></div>
   </div>
 
+  <!-- Modal Direcciones Simple y Funcional -->
+  <div class="modal-overlay" id="directionsModal">
+    <div class="modal" style="max-width:100%;max-height:100vh;width:100%;margin:0;border-radius:0;display:flex;flex-direction:column;background:#fff">
+      <div class="modal-header" style="padding:12px 16px;background:#3b82f6;color:white;display:flex;justify-content:space-between;align-items:center">
+        <h3 style="margin:0;font-size:18px">🗺️ Cómo llegar</h3>
+        <button class="modal-close" onclick="closeDirectionsModal()" style="color:white;background:transparent;border:none;font-size:24px;cursor:pointer">&times;</button>
+      </div>
+      
+      <div style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column">
+        <!-- Mapa simple -->
+        <div id="directionsMap" style="width:100%;height:280px;border-radius:10px;border:1px solid #ccc;margin-bottom:16px;background:#f0f0f0"></div>
+        
+        <!-- Info de distancia y tiempo -->
+        <div style="background:#f3f4f6;padding:16px;border-radius:10px;margin-bottom:16px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px">
+            <div>
+              <div style="font-size:12px;color:#666;margin-bottom:4px">Distancia</div>
+              <div id="directionsDist" style="font-size:24px;font-weight:700;color:#3b82f6">-- km</div>
+            </div>
+            <div>
+              <div style="font-size:12px;color:#666;margin-bottom:4px">Tiempo estimado</div>
+              <div id="directionsTimeEst" style="font-size:24px;font-weight:700;color:#3b82f6">-- min</div>
+            </div>
+          </div>
+          <div style="font-size:13px;color:#666">
+            Desde tu ubicación actual hasta <strong id="directionsTitle">destino</strong>
+          </div>
+        </div>
+
+        <!-- Instrucciones simples -->
+        <div style="background:#fffbeb;padding:16px;border-radius:10px;border-left:4px solid #f59e0b;margin-bottom:16px">
+          <div style="font-size:12px;color:#92400e;margin-bottom:4px">INSTRUCCIONES</div>
+          <div id="directionsInstructions" style="font-size:14px;color:#000;line-height:1.5">
+            Abre Google Maps para navegación paso a paso con voz
+          </div>
+        </div>
+
+        <!-- Botones de acción -->
+        <div style="display:flex;gap:10px;margin-top:auto">
+          <button class="btn btn-primary" style="flex:1" onclick="openGoogleMapsDirections()">
+            📱 Abrir Google Maps
+          </button>
+          <button class="btn btn-danger" style="flex:1" onclick="closeDirectionsModal()">
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    @keyframes bounce {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+    }
+  </style>
+
   <div class="toast" id="toast"></div>
   <div class="ads-overlay" id="adsOverlay">
     <div class="ads-card" id="adsCard">
@@ -1232,6 +1289,8 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" 
           integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" 
           crossorigin=""></script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+  <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
   
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/12.10.0/firebase-app.js";
@@ -1354,9 +1413,9 @@
       }, error => { 
         console.warn('Error en GPS: ', error.message); 
       }, { 
-        enableHighAccuracy: true, 
-        maximumAge: 0, 
-        timeout: 5000 
+        enableHighAccuracy: false, 
+        maximumAge: 5000, 
+        timeout: 60000 
       }); 
     }
 
@@ -1503,6 +1562,411 @@
         .openOn(map); 
     }
 
+    // ===== FUNCIONES DE DIRECCIONES SIMPLES =====
+    let directionsMapInstance = null;
+    let directionsPolyline = null;
+    let currentDestLat = null;
+    let currentDestLng = null;
+    let currentDestTitle = '';
+    let directionsGPSWatchId = null;
+    let directionsUserMarkerMap = null;
+    let directionsDestMarkerMap = null;
+    let currentRouteCoordinates = null; // Almacena la ruta actual
+
+    // Decodifica una polyline codificada (formato usado por OSRM)
+    function decodePolyline(encoded) {
+      const points = [];
+      let index = 0;
+      let lat = 0;
+      let lng = 0;
+      
+      while (index < encoded.length) {
+        let result = 0;
+        let shift = 0;
+        let byte;
+        
+        do {
+          byte = encoded.charCodeAt(index++) - 63;
+          result |= (byte & 0x1f) << shift;
+          shift += 5;
+        } while (byte >= 0x20);
+        
+        let dlat = ~(result >> 1) ? (result >> 1) : -(result + 1) >> 1;
+        lat += dlat;
+        
+        result = 0;
+        shift = 0;
+        do {
+          byte = encoded.charCodeAt(index++) - 63;
+          result |= (byte & 0x1f) << shift;
+          shift += 5;
+        } while (byte >= 0x20);
+        
+        let dlng = ~(result >> 1) ? (result >> 1) : -(result + 1) >> 1;
+        lng += dlng;
+        
+        points.push([lat / 1e5, lng / 1e5]);
+      }
+      
+      return points;
+    }
+
+    // Obtiene la ruta real de OSRM (con proxy fallback)
+    async function fetchRouteGeometry(startLat, startLng, endLat, endLng) {
+      const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=polyline`;
+      
+      try {
+        // Intentar fetch directo primero
+        console.log('Intentando OSRM directo...');
+        const response = await fetch(osrmUrl, { 
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        });
+        
+        if (!response.ok) throw new Error(`HTTP status ${response.status}`);
+        
+        const data = await response.json();
+        
+        if (data.routes && data.routes.length > 0) {
+          const encoded = data.routes[0].geometry;
+          const coordinates = decodePolyline(encoded);
+          console.log('Ruta obtenida de OSRM directo');
+          return coordinates;
+        }
+        
+        return null;
+      } catch (directError) {
+        console.log('OSRM directo falló, intentando proxies CORS...');
+        
+        // Intentar con proxies CORS
+        const proxies = [
+          `https://cors.bridged.cc/${osrmUrl}`,
+          `https://api.allorigins.win/get?url=${encodeURIComponent(osrmUrl)}`,
+        ];
+        
+        for (const proxyUrl of proxies) {
+          try {
+            console.log('Intentando proxy:', proxyUrl.split('/')[2]);
+            const response = await fetch(proxyUrl, { 
+              method: 'GET',
+              headers: { 'Accept': 'application/json' }
+            });
+            
+            if (!response.ok) throw new Error(`HTTP status ${response.status}`);
+            
+            let data = await response.json();
+            
+            // Si es de allorigins, los datos vienen dentro de 'contents'
+            if (data.contents) {
+              data = JSON.parse(data.contents);
+            }
+            
+            if (data.routes && data.routes.length > 0) {
+              const encoded = data.routes[0].geometry;
+              const coordinates = decodePolyline(encoded);
+              console.log('Ruta obtenida del proxy CORS');
+              return coordinates;
+            }
+          } catch (proxyError) {
+            console.log('Proxy fallido, intentando siguiente...');
+            continue;
+          }
+        }
+        
+        console.log('Todos los métodos fallaron - usando fallback de línea recta');
+        return null; // Fallback a línea recta
+      }
+    }
+
+    // Calcula la distancia entre dos puntos en km usando Haversine
+    function haversineDistance(lat1, lng1, lat2, lng2) {
+      const R = 6371; // Radio de la tierra en km
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLng/2) * Math.sin(dLng/2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
+    }
+
+    // Calcula distancia total de una ruta (array de coordenadas)
+    function calculateRouteDistance(coordinates) {
+      if (!coordinates || coordinates.length < 2) return 0;
+      let distance = 0;
+      for (let i = 0; i < coordinates.length - 1; i++) {
+        const [lat1, lng1] = coordinates[i];
+        const [lat2, lng2] = coordinates[i + 1];
+        distance += haversineDistance(lat1, lng1, lat2, lng2);
+      }
+      return distance;
+    }
+
+    // Estima el tiempo en minutos (suponiendo 60 km/h en ruta)
+    function estimateTime(distanceKm) {
+      const speedKmH = 60;
+      return Math.round((distanceKm / speedKmH) * 60);
+    }
+
+    // Abre Google Maps con direcciones
+    window.openGoogleMapsDirections = function() {
+      if (!currentDestLat || !currentDestLng) return;
+      
+      if (!userMarker) {
+        showToast('No hay ubicación actual disponible', 'error');
+        return;
+      }
+
+      const userLat = userMarker.getLatLng().lat;
+      const userLng = userMarker.getLatLng().lng;
+      const url = `https://www.google.com/maps/dir/${userLat},${userLng}/${currentDestLat},${currentDestLng}`;
+      window.open(url, '_blank');
+    };
+
+    // Cierra el modal de direcciones
+    window.closeDirectionsModal = function() {
+      const modal = document.getElementById('directionsModal');
+      if (modal) {
+        modal.classList.remove('active');
+        document.body.style.overflow = '';
+      }
+      
+      // Detener GPS tracking
+      if (directionsGPSWatchId !== null) {
+        navigator.geolocation.clearWatch(directionsGPSWatchId);
+        directionsGPSWatchId = null;
+      }
+      
+      if (directionsMapInstance) {
+        try { directionsMapInstance.remove(); } catch(e) {}
+        directionsMapInstance = null;
+      }
+      
+      directionsUserMarkerMap = null;
+      directionsDestMarkerMap = null;
+    };
+
+    // Abre las direcciones (entrada principal)
+    window.openDirections = async function(lat, lng, title) {
+      if (isNaN(lat) || isNaN(lng)) {
+        showToast('No hay ubicación disponible para esta publicación', 'error');
+        return;
+      }
+
+      if (!userMarker) {
+        showToast('Necesitamos tu ubicación GPS para mostrar la ruta', 'warning');
+        return;
+      }
+
+      currentDestLat = lat;
+      currentDestLng = lng;
+      currentDestTitle = title;
+
+      const userLat = userMarker.getLatLng().lat;
+      const userLng = userMarker.getLatLng().lng;
+
+      // Mostrar modal
+      document.getElementById('directionsModal').classList.add('active');
+      document.body.style.overflow = 'hidden';
+      
+      // Mostrar "cargando..."
+      document.getElementById('directionsDist').textContent = '⏳ Cargando...';
+      document.getElementById('directionsTimeEst').textContent = '--';
+      document.getElementById('directionsTitle').textContent = title;
+      document.getElementById('directionsInstructions').innerHTML = 
+        `<strong>${title}</strong><br><small style="color:#666">Obteniendo ruta...</small>`;
+
+      // Obtener la ruta real
+      const routeCoordinates = await fetchRouteGeometry(userLat, userLng, lat, lng);
+      
+      if (routeCoordinates && routeCoordinates.length > 0) {
+        currentRouteCoordinates = routeCoordinates;
+        // Calcular distancia desde la ruta real
+        const distance = calculateRouteDistance(routeCoordinates);
+        const time = estimateTime(distance);
+        document.getElementById('directionsDist').textContent = distance.toFixed(1) + ' km';
+        document.getElementById('directionsTimeEst').textContent = time + ' min';
+      } else {
+        // Fallback: línea recta si OSRM falla (esperado en localhost)
+        currentRouteCoordinates = null;
+        const distance = haversineDistance(userLat, userLng, lat, lng);
+        const time = estimateTime(distance);
+        document.getElementById('directionsDist').textContent = distance.toFixed(1) + ' km';
+        document.getElementById('directionsTimeEst').textContent = time + ' min';
+      }
+
+      document.getElementById('directionsInstructions').innerHTML = 
+        `<strong>${title}</strong><br><small style="color:#666">Rastreando tu ubicación en tiempo real...</small>`;
+
+      // Inicializar mapa después de que sea visible
+      setTimeout(() => {
+        initDirectionsMapSimple(userLat, userLng, lat, lng);
+        startDirectionsGPSTracking();
+      }, 100);
+    };
+
+    // Inicializa el mapa simple de direcciones
+    function initDirectionsMapSimple(userLat, userLng, destLat, destLng) {
+      const container = document.getElementById('directionsMap');
+      if (!container) return;
+
+      // Destruir mapa anterior si existe
+      if (directionsMapInstance) {
+        try { directionsMapInstance.remove(); } catch(e) {}
+      }
+
+      // Crear nuevo mapa
+      directionsMapInstance = L.map('directionsMap').setView(
+        [userLat, userLng],
+        15
+      );
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap',
+        maxZoom: 19
+      }).addTo(directionsMapInstance);
+
+      // Marcador de usuario (verde) - ACTUALIZABLE
+      directionsUserMarkerMap = L.marker([userLat, userLng], {
+        icon: L.icon({
+          iconUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI4IiBmaWxsPSIjMjJjNTVlIi8+PGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMjJjNTVlIiBzdHJva2Utd2lkdGg9IjEiIG9wYWNpdHk9IjAuNSIvPjwvc3ZnPg==',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12]
+        })
+      }).addTo(directionsMapInstance).bindPopup('Tu ubicación');
+
+      // Marcador de destino (rojo) - FIJO
+      directionsDestMarkerMap = L.marker([destLat, destLng], {
+        icon: L.icon({
+          iconUrl: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHZpZXdCb3g9IjAgMCAzMiAzMiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTYgMkMxMCA2LjQyIDUgMTEuNzEgNSAxOGMwIDYuMDggNCA5IDExIDExYzcgLTIgMTEgLTQuOTIgMTEgLTExYzAgLTYuMjkgLTUgLTExLjU4IC0xMSAtMTZ6TTI0IDI4SDB2MWgyNHYtMXoiIGZpbGw9IiNlZjQ0NDQiLz48L3N2Zz4=',
+          iconSize: [32, 32],
+          iconAnchor: [16, 32]
+        })
+      }).addTo(directionsMapInstance).bindPopup(currentDestTitle || 'Destino');
+
+      // Dibujar la ruta: usar ruta real si está disponible, sino línea recta
+      if (directionsPolyline) {
+        directionsMapInstance.removeLayer(directionsPolyline);
+      }
+      
+      if (currentRouteCoordinates && currentRouteCoordinates.length > 0) {
+        // Dibujar la ruta real que sigue las calles
+        directionsPolyline = L.polyline(
+          currentRouteCoordinates,
+          { color: '#3b82f6', weight: 4, opacity: 0.9 }
+        ).addTo(directionsMapInstance);
+      } else {
+        // Fallback: línea recta (para localhost o si OSRM falla)
+        directionsPolyline = L.polyline(
+          [[userLat, userLng], [destLat, destLng]],
+          { color: '#ef4444', weight: 3, opacity: 0.6, dashArray: '5, 5' }
+        ).addTo(directionsMapInstance);
+      }
+
+      // Ajustar zoom para ver la ruta completa
+      if (currentRouteCoordinates && currentRouteCoordinates.length > 0) {
+        directionsMapInstance.fitBounds(currentRouteCoordinates, { padding: [50, 50] });
+      } else {
+        directionsMapInstance.fitBounds([[userLat, userLng], [destLat, destLng]], { padding: [50, 50] });
+      }
+
+      // Invalidar tamaño después de que el contenedor sea visible
+      setTimeout(() => {
+        if (directionsMapInstance) directionsMapInstance.invalidateSize();
+      }, 200);
+    }
+
+    // Inicia el GPS tracking en tiempo real
+    function startDirectionsGPSTracking() {
+      if (!navigator.geolocation) {
+        showToast('Geolocalización no disponible en tu dispositivo', 'error');
+        return;
+      }
+
+      // Detener watch anterior si existe
+      if (directionsGPSWatchId !== null) {
+        navigator.geolocation.clearWatch(directionsGPSWatchId);
+      }
+
+      let gpsTimeoutCount = 0;
+
+      // Iniciar nuevo watch con parámetros más tolerantes
+      directionsGPSWatchId = navigator.geolocation.watchPosition(
+        (position) => {
+          gpsTimeoutCount = 0; // Reset timeout counter on success
+          
+          const currentLat = position.coords.latitude;
+          const currentLng = position.coords.longitude;
+
+          // Actualizar marcador del usuario
+          if (directionsUserMarkerMap && directionsMapInstance) {
+            directionsUserMarkerMap.setLatLng([currentLat, currentLng]);
+
+            // Centrar mapa en el usuario (seguimiento tipo Waze)
+            directionsMapInstance.panTo([currentLat, currentLng]);
+          }
+
+          // Actualizar distancia y tiempo
+          if (currentDestLat !== null && currentDestLng !== null) {
+            let distance;
+            
+            if (currentRouteCoordinates && currentRouteCoordinates.length > 0) {
+              // Calcular distancia desde la ruta actual
+              distance = calculateRouteDistance(currentRouteCoordinates.slice(
+                currentRouteCoordinates.length - 20 // Últimos puntos para mejor aproximación
+              ));
+              // Si es muy pequeño, usar distancia recta
+              if (distance < 0.01) {
+                distance = haversineDistance(currentLat, currentLng, currentDestLat, currentDestLng);
+              }
+            } else {
+              // Fallback: distancia recta
+              distance = haversineDistance(currentLat, currentLng, currentDestLat, currentDestLng);
+            }
+            
+            const time = estimateTime(distance);
+
+            document.getElementById('directionsDist').textContent = distance.toFixed(1) + ' km';
+            document.getElementById('directionsTimeEst').textContent = time + ' min';
+          }
+        },
+        (error) => {
+          gpsTimeoutCount++;
+          console.log('GPS Error:', error.code, error.message);
+          
+          // Timeout expired (code 3)
+          if (error.code === 3) {
+            if (gpsTimeoutCount === 1) {
+              console.log('GPS timeout - buscando ubicación en caché');
+            }
+            // No mostrar toast en cada timeout, solo la primera vez
+            if (gpsTimeoutCount === 3) {
+              showToast('GPS lento - usando ubicación en caché', 'warning');
+            }
+          }
+          
+          // Permission denied (code 1)
+          if (error.code === 1) {
+            showToast('Permiso de ubicación denegado', 'error');
+            navigator.geolocation.clearWatch(directionsGPSWatchId);
+            directionsGPSWatchId = null;
+          }
+          
+          // Position unavailable (code 2)
+          if (error.code === 2) {
+            console.log('Ubicación no disponible - intenta en exteriores');
+          }
+        },
+        {
+          enableHighAccuracy: false,
+          timeout: 60000,           // 60 segundos (más tolerante)
+          maximumAge: 5000          // Aceptar ubicación en caché de hasta 5 segundos
+        }
+      );
+    }
+
+
+
     window.showPostDetail = function(postId) { 
       const post = posts[postId]; 
       if (!post) return; 
@@ -1530,7 +1994,10 @@
           <span>📅 ${formatDate(post.createdAt)}</span>
           <span>📍 ${latText}, ${lngText}</span>
         </div>
-        ${isOwner ? `<button class="btn btn-danger" onclick="deletePost('${postId}')">🗑️ Eliminar publicación</button>` : ''}
+        <div style="display:flex;gap:10px;margin-bottom:12px">
+          <button class="btn btn-primary" onclick="openDirections(${Number(post.lat)}, ${Number(post.lng)}, '${escapeHtml(post.title).replace(/'/g, "\\'")}')">🗺️ Cómo llegar</button>
+          ${isOwner ? `<button class="btn btn-danger" onclick="deletePost('${postId}')">🗑️ Eliminar</button>` : ''}
+        </div>
         
         <!-- Comments section (mini-foro) -->
         <hr style="margin:18px 0;border:none;border-top:1px solid var(--border)">
@@ -1645,8 +2112,8 @@
         showToast('Error al obtener ubicación', 'error'); 
         document.getElementById('btnGeo').classList.remove('active'); 
       }, { 
-        enableHighAccuracy: true, 
-        timeout: 10000 
+        enableHighAccuracy: false, 
+        timeout: 30000 
       }); 
     };
 
